@@ -1,4 +1,4 @@
-# yolo object detect onnxruntime-web
+# yolo  pose estimation Browser onnxruntime-web
 
 <img src="https://github.com/nomi30701/yolo-pose-estimation-onnxruntime-web/blob/main/preview.jpg" height=80% width=80%>
 
