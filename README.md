@@ -2,9 +2,13 @@
 
 <img src="https://github.com/nomi30701/yolo-pose-estimation-onnxruntime-web/blob/main/preview.jpg" height=80% width=80%>
 
-This is yolo model pose estimation web app, powered by ONNXRUNTIME-WEB.
+This is yolo model pose estimation browser, powered by onnxruntime web.
 
-Support Webgpu and wasm(cpu).
+Support Webgpu acceleration performance and wasm(cpu).
+
+Realtime process webcam, image.
+
+Add your custom model for inference.
 
 ## Models
 ### Available Yolo Models
