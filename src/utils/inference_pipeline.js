@@ -1,247 +1,127 @@
-import * as ort from "onnxruntime-web/webgpu";
+import cvReadyPromise from "@techstark/opencv-js";
+import { preProcess_img, applyNMS, Colors } from "./img_preprocess";
+
+let cv;
+
+// init opencvjs
+(async () => {
+  cv = await cvReadyPromise;
+})();
 
 /**
- * @typedef {Object} config
- * @property {[Number]} input_shape  - input shape of the model.
- * @property {Number} iou_threshold - Intersection over union threshold.
- * @property {Number} score_threshold - Score threshold.
- */
-/**
- * Yolov11 inference pipeline.
- * @param {(HTMLImageElement|HTMLCanvasElement)} input_el - Input <img> or <canvas> element for detect.
- * @param {ort.InferenceSession} session - Yolo model.
- * @param {sessionsConfig} config - Configuration for the model.
+ * Inference pipeline for YOLO model.
+ * @param {HTMLImageElement|HTMLCanvasElement|OffscreenCanvas} imageSource - Input image source
+ * @param {ort.InferenceSession} session - YOLO model ort session.
+ * @param {[Number, Number]} overlay_size - Overlay width and height. [width, height]
+ * @param {object} model_config - Model configuration object.
+ * @returns {[object, string]} Tuple containing:
+ *   - First element: object with inference results:
+ *     - bbox_results: Array<Object> - Filtered detection results after NMS, each containing:
+ *       - bbox: [x, y, width, height] in original image coordinates
+ *       - class_idx: Predicted class index
+ *       - score: Confidence score (0-1)
+ *       - keypoints:  For pose tasks: [{x, y, score}] for each keypoint
+ *     - mask_imgData?: For segmentation tasks: RGBA overlay image with colored masks
+ *   - Second element: Inference time in milliseconds (formatted to 2 decimal places)
  *
- * @returns {[Array[Object], Number]} - Array of predictions and inference time.
  */
-export const inference_pipeline = async (input_el, session, config) => {
-  const src_mat = cv.imread(input_el);
+export async function inference_pipeline(
+  imageSource,
+  session,
+  overlay_size,
+  model_config
+) {
+  try {
+    // Read DOM to cv.Mat
+    const src_mat = cv.imread(imageSource);
 
-  // pre process input image
-  // const [src_mat_preProcessed, xRatio, yRatio] = await preProcess(
-  //   src_mat,
-  //   sessionsConfig.input_shape[2],
-  //   sessionsConfig.input_shape[3]
-  // );
+    // Pre-process img, inference
+    const [input_tensor, xRatio, yRatio] = preProcess_img(
+      src_mat,
+      overlay_size,
+      model_config.imgsz_type
+    );
+    src_mat.delete();
 
-  const [src_mat_preProcessed, div_width, div_height] =
-    preProcess_dynamic(src_mat);
-  const xRatio = src_mat.cols / div_width;
-  const yRatio = src_mat.rows / div_height;
+    const start = performance.now();
+    const { output0 } = await session.run({
+      images: input_tensor,
+    });
+    const end = performance.now();
+    input_tensor.dispose();
 
-  src_mat.delete();
+    // Post process
+    const results = postProcess_pose(
+      output0,
+      model_config.score_threshold,
+      xRatio,
+      yRatio
+    );
 
-  const input_tensor = new ort.Tensor("float32", src_mat_preProcessed.data32F, [
-    1,
-    3,
-    div_height,
-    div_width,
-  ]);
-  src_mat_preProcessed.delete();
+    output0.dispose();
 
-  // inference
-  const start = performance.now();
-  const { output0 } = await session.run({
-    images: input_tensor,
-  });
-  const end = performance.now();
-  input_tensor.dispose();
+    // Apply NMS
+    const selected_indices = applyNMS(
+      results,
+      results.map((r) => r.score),
+      model_config.iou_threshold
+    );
+    const filtered_results = selected_indices.map((i) => results[i]);
 
+    return [filtered_results, (end - start).toFixed(2)];
+  } catch (error) {
+    console.error("Inference error:", error);
+    return [[], "0.00"];
+  }
+}
+
+/**
+ *
+ * @param {ort.Tensor} raw_tensor - Yolo model output0
+ * @param {number} score_threshold - Score threshold
+ * @param {number} xRatio - xRatio
+ * @param {number} yRatio - yRatio
+ * @returns {Array<Object>} Array of pose estimation results.
+ * - [{bbox: [x, y, w, h], score, keypoints: [{x, y, score}]}, ...]
+ */
+function postProcess_pose(raw_tensor, score_threshold = 0.45, xRatio, yRatio) {
   // post process
-  const num_predictions = output0.dims[2];
+  const NUM_PREDICTIONS = raw_tensor.dims[2];
   const NUM_BBOX_ATTRS = 5;
   const NUM_KEYPOINTS = 17;
   const KEYPOINT_DIMS = 3;
 
-  const predictions = output0.data;
-  const bbox_data = predictions.subarray(0, num_predictions * NUM_BBOX_ATTRS);
-  const keypoints_data = predictions.subarray(num_predictions * NUM_BBOX_ATTRS);
+  const predictions = raw_tensor.data;
+  const bbox_data = predictions.subarray(0, NUM_PREDICTIONS * NUM_BBOX_ATTRS);
+  const keypoints_data = predictions.subarray(NUM_PREDICTIONS * NUM_BBOX_ATTRS);
 
-  const results = [];
-  for (let i = 0; i < num_predictions; i++) {
-    const score = bbox_data[i + num_predictions * 4];
-    if (score <= config.score_threshold) continue;
+  const results = new Array();
+  let resultCount = 0;
 
-    const x =
-      (bbox_data[i] - 0.5 * bbox_data[i + num_predictions * 2]) * xRatio;
-    const y =
-      (bbox_data[i + num_predictions] -
-        0.5 * bbox_data[i + num_predictions * 3]) *
-      yRatio;
-    const w = bbox_data[i + num_predictions * 2] * xRatio;
-    const h = bbox_data[i + num_predictions * 3] * yRatio;
+  for (let i = 0; i < NUM_PREDICTIONS; i++) {
+    const score = bbox_data[i + NUM_PREDICTIONS * 4];
+    if (score <= score_threshold) continue;
+
+    const w = bbox_data[i + NUM_PREDICTIONS * 2] * xRatio;
+    const h = bbox_data[i + NUM_PREDICTIONS * 3] * yRatio;
+    const tlx = bbox_data[i] * xRatio - 0.5 * w;
+    const tly = bbox_data[i + NUM_PREDICTIONS] * yRatio - 0.5 * h;
 
     const keypoints = new Array(NUM_KEYPOINTS);
     for (let kp = 0; kp < NUM_KEYPOINTS; kp++) {
-      const base_idx = kp * KEYPOINT_DIMS * num_predictions + i;
+      const base_idx = kp * KEYPOINT_DIMS * NUM_PREDICTIONS + i;
       keypoints[kp] = {
         x: keypoints_data[base_idx] * xRatio,
-        y: keypoints_data[base_idx + num_predictions] * yRatio,
-        score: keypoints_data[base_idx + num_predictions * 2],
+        y: keypoints_data[base_idx + NUM_PREDICTIONS] * yRatio,
+        score: keypoints_data[base_idx + NUM_PREDICTIONS * 2],
       };
     }
 
-    results.push({
-      bbox: [x, y, w, h],
+    results[resultCount++] = {
+      bbox: [tlx, tly, w, h],
       score,
       keypoints,
-    });
+    };
   }
-
-  const selected_indices = applyNMS(
-    results,
-    results.map((r) => r.score),
-    config.iou_threshold
-  );
-  const filtered_results = selected_indices.map((i) => results[i]);
-
-  return [filtered_results, (end - start).toFixed(2)];
-};
-
-function calculateIOU(box1, box2) {
-  const [x1, y1, w1, h1] = box1;
-  const [x2, y2, w2, h2] = box2;
-
-  const box1_x2 = x1 + w1;
-  const box1_y2 = y1 + h1;
-  const box2_x2 = x2 + w2;
-  const box2_y2 = y2 + h2;
-
-  const intersect_x1 = Math.max(x1, x2);
-  const intersect_y1 = Math.max(y1, y2);
-  const intersect_x2 = Math.min(box1_x2, box2_x2);
-  const intersect_y2 = Math.min(box1_y2, box2_y2);
-
-  if (intersect_x2 <= intersect_x1 || intersect_y2 <= intersect_y1) {
-    return 0.0;
-  }
-
-  const intersection =
-    (intersect_x2 - intersect_x1) * (intersect_y2 - intersect_y1);
-  const box1_area = w1 * h1;
-  const box2_area = w2 * h2;
-
-  return intersection / (box1_area + box2_area - intersection);
+  return results;
 }
-
-function applyNMS(boxes, scores, iou_threshold = 0.35) {
-  const picked = [];
-  const indexes = Array.from(Array(scores.length).keys());
-
-  indexes.sort((a, b) => scores[b] - scores[a]);
-
-  while (indexes.length > 0) {
-    const current = indexes[0];
-    picked.push(current);
-
-    const rest = indexes.slice(1);
-    indexes.length = 0;
-
-    for (const idx of rest) {
-      const iou = calculateIOU(boxes[current].bbox, boxes[idx].bbox);
-      if (iou <= iou_threshold) {
-        indexes.push(idx);
-      }
-    }
-  }
-
-  return picked;
-}
-
-/**
- * Pre process input image.
- *
- * Resize and normalize image.
- *
- *
- * @param {cv.Mat} mat - Pre process yolo model input image.
- * @param {Number} input_width - Yolo model input width.
- * @param {Number} input_height - Yolo model input height.
- * @returns {cv.Mat} Processed input mat.
- */
-const preProcess = (mat, input_width, input_height) => {
-  cv.cvtColor(mat, mat, cv.COLOR_RGBA2RGB);
-
-  // Resize to dimensions divisible by 32
-  const [div_width, div_height] = divStride(32, mat.cols, mat.rows);
-  cv.resize(mat, mat, new cv.Size(div_width, div_height));
-
-  // Padding to square
-  const max_dim = Math.max(div_width, div_height);
-  const right_pad = max_dim - div_width;
-  const bottom_pad = max_dim - div_height;
-  cv.copyMakeBorder(
-    mat,
-    mat,
-    0,
-    bottom_pad,
-    0,
-    right_pad,
-    cv.BORDER_CONSTANT,
-    new cv.Scalar(0, 0, 0)
-  );
-
-  // Calculate ratios
-  const xRatio = mat.cols / input_width;
-  const yRatio = mat.rows / input_height;
-
-  // Resize to input dimensions and normalize to [0, 1]
-  const preProcessed = cv.blobFromImage(
-    mat,
-    1 / 255.0,
-    new cv.Size(input_width, input_height),
-    new cv.Scalar(0, 0, 0),
-    false,
-    false
-  );
-
-  return [preProcessed, xRatio, yRatio];
-};
-
-/**
- * Pre process input image.
- *
- * Normalize image.
- *
- * @param {cv.Mat} mat - Pre process yolo model input image.
- * @param {Number} input_width - Yolo model input width.
- * @param {Number} input_height - Yolo model input height.
- * @returns {cv.Mat} Processed input mat.
- */
-const preProcess_dynamic = (mat) => {
-  cv.cvtColor(mat, mat, cv.COLOR_RGBA2RGB);
-
-  // resize image to divisible by 32
-  const [div_width, div_height] = divStride(32, mat.cols, mat.rows);
-  // resize, normalize to [0, 1]
-  const preProcessed = cv.blobFromImage(
-    mat,
-    1 / 255.0,
-    new cv.Size(div_width, div_height),
-    new cv.Scalar(0, 0, 0),
-    false,
-    false
-  );
-  return [preProcessed, div_width, div_height];
-};
-
-/**
- * Return height and width are divisible by stride.
- * @param {Number} stride - Stride value.
- * @param {Number} width - Image width.
- * @param {Number} height - Image height.
- * @returns {[Number]}[width, height] divisible by stride.
- **/
-const divStride = (stride, width, height) => {
-  width =
-    width % stride >= stride / 2
-      ? (Math.floor(width / stride) + 1) * stride
-      : Math.floor(width / stride) * stride;
-
-  height =
-    height % stride >= stride / 2
-      ? (Math.floor(height / stride) + 1) * stride
-      : Math.floor(height / stride) * stride;
-
-  return [width, height];
-};

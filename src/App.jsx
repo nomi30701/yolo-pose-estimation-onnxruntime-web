@@ -2,198 +2,75 @@ import "./assets/App.css";
 import { useEffect, useRef, useState, useCallback } from "react";
 import { model_loader } from "./utils/model_loader";
 import { inference_pipeline } from "./utils/inference_pipeline";
-import { draw_bounding_boxes } from "./utils/draw_bounding_boxes";
+import { render_overlay } from "./utils/render_overlay";
 
-// config
-const input_shape = [1, 3, 640, 640];
-const iou_threshold = 0.35;
-const score_threshold = 0.45;
-const config = { input_shape, iou_threshold, score_threshold };
+const MODEL_CONFIG = {
+  input_shape: [1, 3, 640, 640],
+  iou_threshold: 0.35,
+  score_threshold: 0.45,
+  backend: "wasm",
+  model: "yolo11n",
+  model_path: "",
+  imgsz_type: "dynamic",
+};
 
-function App() {
-  // setting Refs
-  const deviceRef = useRef(null);
-  const modelRef = useRef(null);
-  const [customModels, setCustomModels] = useState([]);
-  const [cameras, setCameras] = useState([]);
-  const cameraSelectorRef = useRef(null);
-  const [camera_stream, setCameraStream] = useState(null);
-  const sessionRef = useRef(null);
-
-  // content Refs
-  const imgRef = useRef(null);
-  const [imgSrc, setImgSrc] = useState(null);
-  const overlayRef = useRef(null);
-  const cameraRef = useRef(null);
-  const inputCanvasRef = useRef(null);
-
-  // model status Ref
-  const [warnUpTime, setWarnUpTime] = useState(0);
-  const [inferenceTime, setInferenceTime] = useState(0);
-  const modelStatusRef = useRef(null);
-
-  // button Refs
-  const openImageRef = useRef(null);
-  const [isModelLoaded, setIsModelLoaded] = useState(false);
-
-  useEffect(() => {
-    loadModel();
-    getCameras();
-  }, []);
-
-  const loadModel = useCallback(async () => {
-    const modelStatusEl = modelStatusRef.current;
-    modelStatusEl.textContent = "Loading model...";
-    modelStatusEl.style.color = "red";
-    setIsModelLoaded(false);
-
-    const device = deviceRef.current.value;
-    const selectedModel = modelRef.current.value;
-    const customModel = customModels.find(
-      (model) => model.url === selectedModel
-    ); // if selected custom model
-
-    const model_path = customModel
-      ? customModel.url
-      : `${window.location.href}/models/${selectedModel}.onnx`;
-
-    try {
-      // load model and warm up
-      const start = performance.now();
-      const yolo_model = await model_loader(device, model_path, config);
-      const end = performance.now();
-
-      sessionRef.current = yolo_model;
-
-      modelStatusEl.textContent = "Model loaded";
-      modelStatusEl.style.color = "green";
-      setWarnUpTime((end - start).toFixed(2));
-      setIsModelLoaded(true);
-    } catch (error) {
-      modelStatusEl.textContent = "Model loading failed";
-      modelStatusEl.style.color = "red";
-      console.error(error);
-    }
-  }, [customModels]);
-
-  // handles
-  const handle_AddModel = useCallback((event) => {
-    const file = event.target.files[0];
-    if (file) {
-      const fileName = file.name.replace(".onnx", "");
-      setCustomModels((prevModels) => [
-        ...prevModels,
-        { name: fileName, url: URL.createObjectURL(file) },
-      ]);
-    }
-  }, []);
-
-  const handle_OpenImage = useCallback((event) => {
-    const file = event.target.files[0];
-    if (file) {
-      setImgSrc(URL.createObjectURL(file));
-      openImageRef.current.disabled = true;
-      event.target.value = null;
-    }
-  }, []);
-
-  const handle_ImageLoad = useCallback(async () => {
-    overlayRef.current.width = imgRef.current.width;
-    overlayRef.current.height = imgRef.current.height;
-    const [results, results_inferenceTime] = await inference_pipeline(
-      imgRef.current,
-      sessionRef.current,
-      config
-    );
-    setInferenceTime(results_inferenceTime);
-    draw_bounding_boxes(results, overlayRef.current);
-  }, [sessionRef.current]);
-
-  const getCameras = useCallback(async () => {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const videoDevices = devices.filter(
-      (device) => device.kind === "videoinput"
-    );
-    setCameras(videoDevices);
-  }, []);
-
-  const handle_ToggleCamera = useCallback(async () => {
-    if (camera_stream) {
-      // stop camera
-      camera_stream.getTracks().forEach((track) => track.stop());
-      cameraRef.current.srcObject = null;
-      setCameraStream(null);
-      overlayRef.current.width = 0;
-      overlayRef.current.height = 0;
-    } else {
-      // start camera
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          deviceId: cameraSelectorRef.current.value,
-        },
-        audio: false,
-      });
-      setCameraStream(stream);
-      cameraRef.current.srcObject = stream;
-    }
-  }, [camera_stream]);
-
-  const handle_cameraLoad = useCallback(() => {
-    const inputCanvasCtx = inputCanvasRef.current.getContext("2d", {
-      willReadFrequently: true,
-    });
-    inputCanvasCtx.canvas.width = cameraRef.current.videoWidth;
-    inputCanvasCtx.canvas.height = cameraRef.current.videoHeight;
-    overlayRef.current.width = cameraRef.current.videoWidth;
-    overlayRef.current.height = cameraRef.current.videoHeight;
-    handle_frame_continuous(inputCanvasCtx);
-  }, [sessionRef.current]);
-
-  const handle_frame_continuous = useCallback(
-    async (ctx) => {
-      if (!cameraRef.current.srcObject) {
-        return;
-      }
-      ctx.drawImage(
-        cameraRef.current,
-        0,
-        0,
-        cameraRef.current.videoWidth,
-        cameraRef.current.videoHeight
-      ); // Draw frame to input <canvas>
-      const [results, results_inferenceTime] = await inference_pipeline(
-        inputCanvasRef.current,
-        sessionRef.current,
-        config
-      );
-      setInferenceTime(results_inferenceTime);
-      draw_bounding_boxes(results, overlayRef.current);
-      requestAnimationFrame(() => handle_frame_continuous(ctx));
-    },
-    [sessionRef.current]
-  );
-
+// Settings Components
+function SettingsPanel({
+  backendSelectorRef,
+  modelSelectorRef,
+  cameraSelectorRef,
+  imgszTypeSelectorRef,
+  modelConfigRef,
+  cameras,
+  customModels,
+  loadModel,
+  activeFeature,
+}) {
   return (
-    <>
-      <h1 className="my-8 text-4xl">Yolo Pose estimation</h1>
+    <div
+      id="setting-container"
+      className="container bg-gray-800 rounded-xl shadow-lg p-3 sm:p-4 mb-4 sm:mb-6 overflow-hidden"
+    >
+      <h2 className="text-lg sm:text-xl font-bold mb-3 text-gray-200 border-b border-gray-700 pb-2">
+        Model Settings
+      </h2>
 
-      <div
-        id="setting-container"
-        className="container text-lg flex justify-evenly gap-10"
-      >
-        <div id="device-selector-container">
-          <label htmlFor="device-selector">Backend:</label>
-          <select name="device-selector" ref={deviceRef} onChange={loadModel}>
-            <option value="webgpu">webGPU</option>
-            <option value="wasm">Wasm(cpu)</option>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="flex flex-col">
+          <label className="text-gray-300 mb-1 text-sm font-medium">
+            Backend:
+          </label>
+          <select
+            name="device-selector"
+            ref={backendSelectorRef}
+            onChange={(e) => {
+              modelConfigRef.current.backend = e.target.value;
+              loadModel();
+            }}
+            disabled={activeFeature !== null}
+            className="p-2 text-sm rounded-md bg-gray-700 text-white border border-gray-600 focus:border-violet-500 focus:ring-2 focus:ring-violet-500 transition-all"
+          >
+            <option value="wasm">Wasm (CPU)</option>
+            <option value="webgpu">WebGPU</option>
           </select>
         </div>
-        <div id="model-selector-container">
-          <label htmlFor="model-selector">Model:</label>
-          <select name="model-selector" ref={modelRef} onChange={loadModel}>
-            {/* <option value="YOUR_FILE_NAME">CUSTOM-MODEL</option> */}
-            <option value="yolo11n-pose-simplify-dynamic">yolo11n-2.6M</option>
-            <option value="yolo11s-pose-simplify-dynamic">yolo11s-9.4M</option>
+
+        <div className="flex flex-col">
+          <label className="text-gray-300 mb-1 text-sm font-medium">
+            Model:
+          </label>
+          <select
+            name="model-selector"
+            ref={modelSelectorRef}
+            onChange={(e) => {
+              modelConfigRef.current.model = e.target.value;
+              loadModel();
+            }}
+            disabled={activeFeature !== null}
+            className="p-2 text-sm rounded-md bg-gray-700 text-white border border-gray-600 focus:border-violet-500 focus:ring-2 focus:ring-violet-500 transition-all"
+          >
+            <option value="yolo11n">YOLO11n (2.6M)</option>
+            <option value="yolo11s">YOLO11s (9.4M)</option>
             {customModels.map((model, index) => (
               <option key={index} value={model.url}>
                 {model.name}
@@ -201,103 +78,907 @@ function App() {
             ))}
           </select>
         </div>
-        <div id="camera-selector-container">
-          <label htmlFor="camera-selector">Select Camera:</label>
-          <select ref={cameraSelectorRef}>
-            {cameras.map((camera, index) => (
-              <option key={index} value={camera.deviceId}>
-                {camera.label || `Camera ${index + 1}`}
-              </option>
-            ))}
+
+        <div className="flex flex-col">
+          <label className="text-gray-300 mb-1 text-sm font-medium">
+            Camera:
+          </label>
+          <select
+            ref={cameraSelectorRef}
+            disabled={activeFeature !== null}
+            className="p-2 text-sm rounded-md bg-gray-700 text-white border border-gray-600 focus:border-violet-500 focus:ring-2 focus:ring-violet-500 transition-all"
+          >
+            {cameras.length === 0 ? (
+              <option value="">No cameras detected</option>
+            ) : (
+              cameras.map((camera, index) => (
+                <option key={index} value={camera.deviceId}>
+                  {camera.label || `Camera ${index + 1}`}
+                </option>
+              ))
+            )}
+          </select>
+        </div>
+
+        <div className="flex flex-col">
+          <label className="text-gray-300 mb-1 text-sm font-medium">
+            Image Type:
+          </label>
+          <select
+            disabled={activeFeature !== null}
+            ref={imgszTypeSelectorRef}
+            onChange={(e) => {
+              modelConfigRef.current.imgsz_type = e.target.value;
+            }}
+            className="p-2 text-sm rounded-md bg-gray-700 text-white border border-gray-600 focus:border-violet-500 focus:ring-2 focus:ring-violet-500 transition-all"
+          >
+            <option value="dynamic">Dynamic</option>
+            <option value="zeroPad">Zero Pad</option>
           </select>
         </div>
       </div>
+    </div>
+  );
+}
 
-      <div className="container bg-stone-700 shadow-lg relative min-w-[640px] min-h-[320px] flex justify-center items-center">
-        <canvas ref={inputCanvasRef} hidden></canvas>
-        <video
-          className="block max-w-[720px] max-h-[640px] rounded-lg"
-          ref={cameraRef}
-          onLoadedData={handle_cameraLoad}
-          hidden={!camera_stream}
-          autoPlay
-        ></video>
-        <img
-          id="img"
-          ref={imgRef}
-          src={imgSrc}
-          onLoad={handle_ImageLoad}
-          className="block inset-0 max-w-[720px] max-h-[640px] rounded-lg"
-        />
-        <canvas ref={overlayRef} className="absolute"></canvas>
-      </div>
-
-      <div id="btn-container" className="container flex justify-around">
-        <button
-          className="btn"
-          disabled={camera_stream || !isModelLoaded}
-          onClick={() => {
-            if (!imgSrc) {
-              openImageRef.current.click();
-            } else {
-              setImgSrc("");
-              openImageRef.current.disabled = false;
-              overlayRef.current.width = 0;
-              overlayRef.current.height = 0;
-            }
-          }}
-        >
-          {imgSrc ? "Close Image" : "Open Image"}
-          <input
-            type="file"
-            accept="image/*"
-            hidden
-            ref={openImageRef}
-            onChange={handle_OpenImage}
-          />
-        </button>
-
-        <button
-          className="btn"
-          onClick={handle_ToggleCamera}
-          disabled={cameras.length === 0 || imgSrc || !isModelLoaded}
-        >
-          {camera_stream ? "Close Camera" : "Open Camera"}
-        </button>
-
-        <label className="btn cursor-pointer">
-          <input
-            type="file"
-            accept=".onnx"
-            onChange={handle_AddModel}
-            // ref={modelFileInputRef}
-            hidden
-          />
-          <span>Add model</span>
-        </label>
-      </div>
-
-      <div id="model-status-container" className="text-2xl">
-        <div
-          id="inferenct-time-container"
-          className="flex justify-evenly text-xl my-6"
-        >
-          <p>
-            Warm up time: <span className="text-lime-500">{warnUpTime}ms</span>
-          </p>
-          <p>
-            Inference time:{" "}
-            <span className="text-lime-500">{inferenceTime}ms</span>
+// Display Components
+function ImageDisplay({
+  cameraRef,
+  imgRef,
+  overlayRef,
+  imgSrc,
+  onCameraLoad,
+  onImageLoad,
+  activeFeature,
+}) {
+  return (
+    <div className="container bg-gray-800 rounded-xl shadow-lg relative min-h-[200px] sm:min-h-[320px] flex justify-center items-center overflow-hidden p-2 md:p-4 mb-4 sm:mb-6">
+      {activeFeature === null && (
+        <div className="text-gray-400 text-center p-4 sm:p-8">
+          <svg
+            className="w-16 h-16 sm:w-24 sm:h-24 mx-auto mb-2 sm:mb-4 text-gray-600"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"
+            />
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"
+            />
+          </svg>
+          <p className="text-base sm:text-xl font-medium">No media selected</p>
+          <p className="mt-1 sm:mt-2 text-xs sm:text-base">
+            Use the controls below to open an image, video, or camera
           </p>
         </div>
-        <p
-          className={isModelLoaded ? "" : "animate-text-loading"}
-          ref={modelStatusRef}
+      )}
+      <video
+        className="block max-h-[400px] sm:max-h-[640px] rounded-lg mx-auto object-contain"
+        ref={cameraRef}
+        onLoadedMetadata={onCameraLoad}
+        hidden={activeFeature !== "camera"}
+        autoPlay
+        playsInline
+      />
+      <img
+        id="img"
+        ref={imgRef}
+        src={imgSrc}
+        onLoad={onImageLoad}
+        hidden={activeFeature !== "image"}
+        className="block max-h-[400px] sm:max-h-[640px] rounded-lg mx-auto object-contain"
+        alt="Uploaded"
+      />
+      <canvas
+        ref={overlayRef}
+        hidden={activeFeature === null}
+        className="absolute"
+      ></canvas>
+    </div>
+  );
+}
+
+// button Components
+function ControlButtons({
+  imgSrc,
+  fileVideoRef,
+  fileImageRef,
+  handle_OpenVideo,
+  handle_OpenImage,
+  handle_ToggleCamera,
+  handle_AddModel,
+  activeFeature,
+}) {
+  return (
+    <div className="container bg-gray-800 rounded-xl shadow-lg p-3 sm:p-4 mb-4 sm:mb-6">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
+        {/* Input and buttons */}
+        <input
+          type="file"
+          accept="video/mp4"
+          hidden
+          ref={fileVideoRef}
+          onChange={(e) => {
+            if (e.target.files[0]) {
+              handle_OpenVideo(e.target.files[0]);
+              e.target.value = null;
+            }
+          }}
+        />
+
+        <button
+          className="btn-primary flex items-center justify-center text-sm sm:text-base"
+          onClick={() => fileVideoRef.current.click()}
+          disabled={activeFeature !== null}
         >
-          Model not loaded
+          <svg
+            className="w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
+            />
+          </svg>
+          <span className="truncate">Open Video</span>
+        </button>
+
+        <input
+          type="file"
+          accept="image/*"
+          hidden
+          ref={fileImageRef}
+          onChange={(e) => {
+            if (e.target.files[0]) {
+              const file = e.target.files[0];
+              const imgUrl = URL.createObjectURL(file);
+              handle_OpenImage(imgUrl);
+              e.target.value = null;
+            }
+          }}
+        />
+
+        <button
+          className={`${
+            activeFeature === "image" ? "btn-danger" : "btn-primary"
+          } flex items-center justify-center text-sm sm:text-base`}
+          onClick={() =>
+            imgSrc ? handle_OpenImage() : fileImageRef.current.click()
+          }
+          disabled={activeFeature !== null && activeFeature !== "image"}
+        >
+          {activeFeature === "image" ? (
+            <>
+              <svg
+                className="w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M6 18L18 6M6 6l12 12"
+                />
+              </svg>
+              <span className="truncate">Close Image</span>
+            </>
+          ) : (
+            <>
+              <svg
+                className="w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
+                />
+              </svg>
+              <span className="truncate">Open Image</span>
+            </>
+          )}
+        </button>
+
+        <button
+          className={`${
+            activeFeature === "camera" ? "btn-danger" : "btn-primary"
+          } flex items-center justify-center text-sm sm:text-base`}
+          onClick={handle_ToggleCamera}
+          disabled={activeFeature !== null && activeFeature !== "camera"}
+        >
+          {activeFeature === "camera" ? (
+            <>
+              <svg
+                className="w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M6 18L18 6M6 6l12 12"
+                />
+              </svg>
+              <span className="truncate">Close Camera</span>
+            </>
+          ) : (
+            <>
+              <svg
+                className="w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"
+                />
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"
+                />
+              </svg>
+              <span className="truncate">Open Camera</span>
+            </>
+          )}
+        </button>
+
+        <button
+          className="btn-secondary flex items-center justify-center text-sm sm:text-base"
+          onClick={(e) => {
+            const input = document.createElement("input");
+            input.type = "file";
+            input.accept = ".onnx";
+            input.onchange = handle_AddModel;
+            input.click();
+          }}
+          disabled={activeFeature !== null}
+        >
+          <svg
+            className="w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+            />
+          </svg>
+          <span className="truncate">Add Model</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ModelStatus({ warnUpTime, inferenceTime, statusMsg, statusColor }) {
+  return (
+    <div className="container bg-gray-800 rounded-xl shadow-lg p-3 sm:p-4 mb-4 sm:mb-6">
+      <h2 className="text-lg sm:text-xl font-bold mb-3 text-gray-200 border-b border-gray-700 pb-2">
+        Model Performance
+      </h2>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+        <div className="bg-gray-700 p-3 rounded-lg">
+          <div className="text-gray-400 text-xs sm:text-sm font-medium mb-1">
+            Warm Up Time
+          </div>
+          <div className="text-xl sm:text-2xl font-bold text-lime-500">
+            {warnUpTime} ms
+          </div>
+        </div>
+
+        <div className="bg-gray-700 p-3 rounded-lg">
+          <div className="text-gray-400 text-xs sm:text-sm font-medium mb-1">
+            Inference Time
+          </div>
+          <div className="text-xl sm:text-2xl font-bold text-lime-500">
+            {inferenceTime} ms
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-gray-700 p-3 rounded-lg flex items-center">
+        <div className="mr-2 sm:mr-3">
+          <div
+            className={`w-2 h-2 sm:w-3 sm:h-3 rounded-full ${
+              statusColor === "green"
+                ? "bg-green-500"
+                : statusColor === "red"
+                ? "bg-red-500"
+                : statusColor === "blue"
+                ? "bg-blue-500"
+                : "bg-gray-500"
+            } ${statusColor !== "green" ? "animate-pulse" : ""}`}
+          ></div>
+        </div>
+        <p
+          className={`${
+            statusColor !== "green" ? "animate-text-loading" : ""
+          } text-sm sm:text-lg`}
+          style={{
+            color:
+              statusColor === "green"
+                ? "#10b981"
+                : statusColor === "red"
+                ? "#ef4444"
+                : statusColor === "blue"
+                ? "#3b82f6"
+                : "#d1d5db",
+          }}
+        >
+          {statusMsg}
         </p>
       </div>
-    </>
+    </div>
+  );
+}
+
+function ResultsTable({ details }) {
+  return (
+    <div className="container bg-gray-800 rounded-xl shadow-lg p-3 sm:p-4 mb-4 sm:mb-6">
+      <details className="text-gray-200 group">
+        <summary className="flex items-center cursor-pointer select-none">
+          <div className="flex-1 text-lg sm:text-xl font-bold border-b border-gray-700 pb-2">
+            Detection Results ({details.length})
+          </div>
+          <div className="text-gray-400">
+            <svg
+              className="w-4 h-4 sm:w-5 sm:h-5 transform group-open:rotate-180 transition-transform duration-200"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M19 9l-7 7-7-7"
+              />
+            </svg>
+          </div>
+        </summary>
+
+        <div className="transition-all duration-300 ease-in-out transform origin-top group-open:animate-details-show mt-3 sm:mt-4">
+          {details.length === 0 ? (
+            <div className="bg-gray-700 rounded-lg p-4 sm:p-8 text-center">
+              <svg
+                className="w-8 h-8 sm:w-12 sm:h-12 mx-auto mb-3 sm:mb-4 text-gray-500"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                />
+              </svg>
+              <p className="text-gray-400 text-base sm:text-lg">
+                No poses detected
+              </p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto -mx-3 px-3">
+              <table className="w-full border-collapse min-w-full">
+                <thead>
+                  <tr className="bg-gray-700 text-left">
+                    <th className="p-2 sm:p-3 rounded-tl-lg text-xs sm:text-sm">
+                      ID
+                    </th>
+                    <th className="p-2 sm:p-3 rounded-tr-lg text-xs sm:text-sm">
+                      Confidence
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {details.map((item, index) => (
+                    <tr
+                      key={index}
+                      className={`border-b border-gray-700 hover:bg-gray-700 transition-colors text-gray-300 ${
+                        index === details.length - 1 ? "border-b-0" : ""
+                      }`}
+                    >
+                      <td className="p-2 sm:p-3 font-mono text-xs sm:text-sm">
+                        {index}
+                      </td>
+                      <td className="p-2 sm:p-3 text-xs sm:text-sm">
+                        <div className="flex items-center">
+                          <div className="w-full bg-gray-600 rounded-full h-1.5 sm:h-2.5 mr-1 sm:mr-2 max-w-[100px] sm:max-w-[150px]">
+                            <div
+                              className="bg-lime-500 h-1.5 sm:h-2.5 rounded-full"
+                              style={{ width: `${item.score * 100}%` }}
+                            ></div>
+                          </div>
+                          <span>{(item.score * 100).toFixed(1)}%</span>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </details>
+    </div>
+  );
+}
+
+function App() {
+  const [processingStatus, setProcessingStatus] = useState({
+    warnUpTime: 0,
+    inferenceTime: 0,
+    statusMsg: "Model not loaded",
+    statusColor: "inherit",
+  });
+
+  const modelConfigRef = useRef(MODEL_CONFIG);
+
+  // resource reference
+  const backendSelectorRef = useRef(null);
+  const modelSelectorRef = useRef(null);
+  const cameraSelectorRef = useRef(null);
+  const imgszTypeSelectorRef = useRef(null);
+  const sessionRef = useRef(null);
+  const modelCache = useRef({});
+
+  // content reference
+  const imgRef = useRef(null);
+  const overlayRef = useRef(null);
+  const cameraRef = useRef(null);
+  const fileImageRef = useRef(null);
+  const fileVideoRef = useRef(null);
+
+  // state
+  const [customModels, setCustomModels] = useState([]);
+  const [cameras, setCameras] = useState([]);
+  const [imgSrc, setImgSrc] = useState(null);
+  const [details, setDetails] = useState([]);
+  const [activeFeature, setActiveFeature] = useState(null); // null, 'video', 'image', 'camera'
+
+  // Worker
+  const videoWorkerRef = useRef(null);
+
+  // Init page
+  useEffect(() => {
+    loadModel();
+
+    // Worker setup
+    const videoWorker = new Worker(
+      new URL("./utils/video_process_worker.js", import.meta.url),
+      { type: "module" }
+    );
+
+    videoWorker.onmessage = videoWorkerMessage;
+    videoWorkerRef.current = videoWorker;
+  }, []);
+
+  const videoWorkerMessage = useCallback((e) => {
+    setProcessingStatus((prev) => ({
+      ...prev,
+      statusMsg: e.data.statusMsg,
+    }));
+    if (e.data.processedVideo) {
+      const url = URL.createObjectURL(e.data.processedVideo);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "processed_video.mp4";
+      a.click();
+      URL.revokeObjectURL(url);
+      setActiveFeature(null);
+    }
+  }, []);
+
+  const loadModel = useCallback(async () => {
+    // Update model state
+    setProcessingStatus((prev) => ({
+      ...prev,
+      statusMsg: "Loading model...",
+      statusColor: "red",
+    }));
+    setActiveFeature("loading");
+
+    const modelConfig = modelConfigRef.current;
+
+    // Get model path
+    const customModel = customModels.find(
+      (model) => model.url === modelConfig.model
+    );
+    const model_path = customModel
+      ? customModel.url
+      : `${window.location.href}/models/${modelConfig.model}-pose.onnx`;
+    modelConfig.model_path = model_path;
+
+    const cacheKey = `${modelConfig.model}-${modelConfig.backend}`;
+    if (modelCache.current[cacheKey]) {
+      sessionRef.current = modelCache.current[cacheKey];
+      setProcessingStatus((prev) => ({
+        ...prev,
+        statusMsg: "Model loaded from cache",
+        statusColor: "green",
+      }));
+      setActiveFeature(null);
+      return;
+    }
+
+    try {
+      // Load model
+      const start = performance.now();
+      const yolo_model = await model_loader(model_path, modelConfig.backend);
+      const end = performance.now();
+
+      sessionRef.current = yolo_model;
+      modelCache.current[cacheKey] = yolo_model;
+
+      setProcessingStatus((prev) => ({
+        ...prev,
+        statusMsg: "Model loaded",
+        statusColor: "green",
+        warnUpTime: (end - start).toFixed(2),
+      }));
+    } catch (error) {
+      setProcessingStatus((prev) => ({
+        ...prev,
+        statusMsg: "Model loading failed",
+        statusColor: "red",
+      }));
+      console.error(error);
+    } finally {
+      setActiveFeature(null);
+    }
+  }, [customModels]);
+
+  // Button add model
+  const handle_AddModel = useCallback((event) => {
+    const file = event.target.files[0];
+    if (file) {
+      const fileName = file.name.replace(".onnx", "");
+      const fileUrl = URL.createObjectURL(file);
+      setCustomModels((prevModels) => [
+        ...prevModels,
+        { name: fileName, url: fileUrl },
+      ]);
+    }
+  }, []);
+
+  // Button Upload Image
+  const handle_OpenImage = useCallback(
+    (imgUrl = null) => {
+      if (imgUrl) {
+        setImgSrc(imgUrl);
+        setActiveFeature("image");
+      } else if (imgSrc) {
+        if (imgSrc.startsWith("blob:")) {
+          URL.revokeObjectURL(imgSrc);
+        }
+        overlayRef.current.width = 0;
+        overlayRef.current.height = 0;
+        setImgSrc(null);
+        setDetails([]);
+        setActiveFeature(null);
+      }
+    },
+    [imgSrc]
+  );
+
+  // If image loaded, run inference
+  const handle_ImageLoad = useCallback(async () => {
+    // overlay size = image size
+    overlayRef.current.width = imgRef.current.width;
+    overlayRef.current.height = imgRef.current.height;
+
+    // inference
+    try {
+      const [results, results_inferenceTime] = await inference_pipeline(
+        imgRef.current,
+        sessionRef.current,
+        [overlayRef.current.width, overlayRef.current.height],
+        modelConfigRef.current
+      );
+      // draw results on overlay
+      const overlayCtx = overlayRef.current.getContext("2d");
+      overlayCtx.clearRect(
+        0,
+        0,
+        overlayCtx.canvas.width,
+        overlayCtx.canvas.height
+      );
+      await render_overlay(results, overlayCtx);
+
+      setDetails(results);
+      setProcessingStatus((prev) => ({
+        ...prev,
+        inferenceTime: results_inferenceTime,
+      }));
+    } catch (error) {
+      console.error("Image processing error:", error);
+    }
+  }, [sessionRef.current]);
+
+  // Get camera list
+  const getCameras = useCallback(async () => {
+    try {
+      // get camera list
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoDevices = devices.filter(
+        (device) => device.kind === "videoinput"
+      );
+
+      // if no labels, try request permission to get labels
+      if (videoDevices.length > 0 && !videoDevices[0].label) {
+        try {
+          const tempStream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false,
+          });
+          tempStream.getTracks().forEach((track) => track.stop());
+
+          const updatedDevices =
+            await navigator.mediaDevices.enumerateDevices();
+          const updatedVideoDevices = updatedDevices.filter(
+            (device) => device.kind === "videoinput"
+          );
+
+          setCameras(updatedVideoDevices);
+          return updatedVideoDevices;
+        } catch (err) {
+          console.error("Error getting camera permissions:", err);
+          setCameras(videoDevices);
+          return videoDevices;
+        }
+      } else {
+        setCameras(videoDevices);
+        return videoDevices;
+      }
+    } catch (err) {
+      console.error("Error enumerating devices:", err);
+      setCameras([]);
+      return [];
+    }
+  }, []);
+
+  // Button toggle camera
+  const handle_ToggleCamera = useCallback(async () => {
+    if (cameraRef.current.srcObject) {
+      // close camera
+      cameraRef.current.srcObject.getTracks().forEach((track) => track.stop());
+      cameraRef.current.srcObject = null;
+      overlayRef.current.width = 0;
+      overlayRef.current.height = 0;
+
+      setDetails([]);
+      setActiveFeature(null);
+    } else {
+      // open camera
+      try {
+        setProcessingStatus((prev) => ({
+          ...prev,
+          statusMsg: "Getting camera list...",
+          statusColor: "blue",
+        }));
+        const currentCameras = await getCameras();
+        if (currentCameras.length === 0) {
+          throw new Error("No available camera devices found");
+        }
+
+        setProcessingStatus((prev) => ({
+          ...prev,
+          statusMsg: "Opening camera...",
+          statusColor: "blue",
+        }));
+
+        const selectedDeviceId = cameraSelectorRef.current
+          ? cameraSelectorRef.current.value
+          : currentCameras[0].deviceId;
+
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              deviceId: { exact: selectedDeviceId },
+            },
+            audio: false,
+          });
+
+          cameraRef.current.srcObject = stream;
+          setActiveFeature("camera");
+          setProcessingStatus((prev) => ({
+            ...prev,
+            statusMsg: "Camera opened successfully",
+            statusColor: "green",
+          }));
+        } catch (streamErr) {
+          console.error("Failed to open selected camera:", streamErr);
+
+          setProcessingStatus((prev) => ({
+            ...prev,
+            statusMsg: "Trying to open any available camera...",
+            statusColor: "blue",
+          }));
+
+          const fallbackStream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false,
+          });
+
+          cameraRef.current.srcObject = fallbackStream;
+          setActiveFeature("camera");
+          setProcessingStatus((prev) => ({
+            ...prev,
+            statusMsg: "Default camera opened (selected camera unavailable)",
+            statusColor: "green",
+          }));
+        }
+      } catch (err) {
+        console.error("Error in camera toggle process:", err);
+        setProcessingStatus((prev) => ({
+          ...prev,
+          statusMsg: `Camera opened failed: ${err.message}`,
+          statusColor: "red",
+        }));
+      }
+    }
+  }, [getCameras]);
+
+  // If camera loaded, run inference continuously
+  const handle_cameraLoad = useCallback(() => {
+    overlayRef.current.width = cameraRef.current.clientWidth;
+    overlayRef.current.height = cameraRef.current.clientHeight;
+
+    // create offscreen canvas for input
+    let inputCanvas = new OffscreenCanvas(
+      cameraRef.current.videoWidth,
+      cameraRef.current.videoHeight
+    );
+    let ctx = inputCanvas.getContext("2d", {
+      willReadFrequently: true,
+    });
+
+    // inference loop
+    const handle_frame_continuous = async () => {
+      if (!cameraRef.current?.srcObject) {
+        inputCanvas = null;
+        ctx = null;
+        return;
+      }
+      // draw camera frame to input canvas
+      ctx.drawImage(
+        cameraRef.current,
+        0,
+        0,
+        cameraRef.current.videoWidth,
+        cameraRef.current.videoHeight
+      );
+      // Inference
+      const [results, results_inferenceTime] = await inference_pipeline(
+        inputCanvas,
+        sessionRef.current,
+        [overlayRef.current.width, overlayRef.current.height],
+        modelConfigRef.current
+      );
+      // draw results on overlay
+      const overlayCtx = overlayRef.current.getContext("2d");
+      overlayCtx.clearRect(
+        0,
+        0,
+        overlayCtx.canvas.width,
+        overlayCtx.canvas.height
+      );
+      await render_overlay(results, overlayCtx);
+
+      setDetails(results);
+      setProcessingStatus((prev) => ({
+        ...prev,
+        inferenceTime: results_inferenceTime,
+      }));
+
+      requestAnimationFrame(handle_frame_continuous);
+    };
+    requestAnimationFrame(handle_frame_continuous);
+  }, [sessionRef.current]);
+
+  // Button Upload Video
+  const handle_OpenVideo = useCallback((file) => {
+    if (file) {
+      videoWorkerRef.current.postMessage(
+        {
+          file: file,
+          modelConfig: modelConfigRef.current,
+        },
+        []
+      );
+      setActiveFeature("video");
+    } else {
+      setActiveFeature(null);
+    }
+  }, []);
+
+  return (
+    <div className="max-w-7xl mx-auto px-2 sm:px-4 lg:px-6 py-4 sm:py-6 bg-gray-900 min-h-screen">
+      <h1 className="text-2xl sm:text-3xl md:text-4xl font-bold text-center mb-4 sm:mb-6 text-white">
+        <span className="block sm:inline">YOLO</span>
+        <span className="bg-gradient-to-r from-violet-500 to-fuchsia-500 bg-clip-text text-transparent block sm:inline">
+          {" "}
+          Pose estimation
+        </span>
+      </h1>
+      <SettingsPanel
+        backendSelectorRef={backendSelectorRef}
+        modelSelectorRef={modelSelectorRef}
+        cameraSelectorRef={cameraSelectorRef}
+        imgszTypeSelectorRef={imgszTypeSelectorRef}
+        modelConfigRef={modelConfigRef}
+        cameras={cameras}
+        customModels={customModels}
+        loadModel={loadModel}
+        activeFeature={activeFeature}
+      />
+
+      <ImageDisplay
+        cameraRef={cameraRef}
+        imgRef={imgRef}
+        overlayRef={overlayRef}
+        imgSrc={imgSrc}
+        onCameraLoad={handle_cameraLoad}
+        onImageLoad={handle_ImageLoad}
+        activeFeature={activeFeature}
+      />
+      <ControlButtons
+        imgSrc={imgSrc}
+        fileVideoRef={fileVideoRef}
+        fileImageRef={fileImageRef}
+        handle_OpenVideo={handle_OpenVideo}
+        handle_OpenImage={handle_OpenImage}
+        handle_ToggleCamera={handle_ToggleCamera}
+        handle_AddModel={handle_AddModel}
+        activeFeature={activeFeature}
+      />
+
+      <ModelStatus
+        warnUpTime={processingStatus.warnUpTime}
+        inferenceTime={processingStatus.inferenceTime}
+        statusMsg={processingStatus.statusMsg}
+        statusColor={processingStatus.statusColor}
+      />
+
+      <ResultsTable details={details} />
+    </div>
   );
 }
 
