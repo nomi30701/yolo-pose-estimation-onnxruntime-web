@@ -515,7 +515,7 @@ function ResultsTable({ details }) {
                         index === details.length - 1 ? "border-b-0" : ""
                       }`}
                     >
-                      <td className="p-2 sm:p-3 font-mono text-xs sm:text-sm">
+                      <td className="p-2 text-left sm:p-3 font-mono text-xs sm:text-sm">
                         {index}
                       </td>
                       <td className="p-2 sm:p-3 text-xs sm:text-sm">
